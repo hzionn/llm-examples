@@ -1,8 +1,10 @@
-from typing import List, Literal
-from pydantic import BaseModel, Field, ValidationError
-import requests
-from dotenv import load_dotenv
+import json
 import os
+from typing import List, Literal
+
+import google.genai as genai
+from dotenv import load_dotenv
+from pydantic import BaseModel, Field, ValidationError
 
 load_dotenv()
 
@@ -30,20 +32,7 @@ class ActionPlan(BaseModel):
     actions: List[RobotAction]
 
 
-def call_gemini_api(prompt: str) -> str:
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise EnvironmentError("GEMINI_API_KEY not set in environment variables.")
-    headers = {"Content-Type": "application/json"}
-    data = {"contents": [{"parts": [{"text": prompt}]}]}
-    response = requests.post(f"{url}?key={api_key}", headers=headers, json=data)
-    response.raise_for_status()
-    return response.json()["candidates"][0]["content"]["parts"][0]["text"]
-
-
 def parse_actions(llm_output: str) -> ActionPlan:
-    import json
 
     actions_data = json.loads(llm_output)
     # Validate each action_type
@@ -53,8 +42,23 @@ def parse_actions(llm_output: str) -> ActionPlan:
     return ActionPlan(actions=[RobotAction(**a) for a in actions_data])
 
 
+def call_gemini(prompt: str) -> str:
+    """Send a prompt to Gemini and return the response text."""
+    api_key = os.getenv("GEMINI_API_KEY")
+    model_id = os.getenv("GEMINI_MODEL_ID", "gemini-2.0-flash")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY not set in environment.")
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=model_id,
+        contents=prompt,
+    )
+    return response.text
+
+
 def main():
     user_input = input("Describe the task for the robot: ")
+
     allowed_actions_str = ", ".join(f'"{a}"' for a in ALLOWED_ACTIONS)
     prompt = (
         f"You are controlling a robot that can only perform the following actions: [{allowed_actions_str}].\n"
@@ -66,7 +70,9 @@ def main():
         "Example output: "
         '[{"action_type": "move", "parameters": {"direction": "forward", "distance": 2}}]'
     )
-    llm_output = call_gemini_api(prompt)
+
+    llm_output = call_gemini(prompt)
+
     try:
         cleaned = llm_output.strip()
         if cleaned.startswith("```"):
@@ -79,6 +85,7 @@ def main():
         action_plan = parse_actions(cleaned)
         print("Generated action plan:")
         print(action_plan.model_dump_json(indent=2))
+
     except (ValidationError, Exception) as e:
         print("Failed to parse LLM output:", e)
         print("Raw output:", llm_output)
